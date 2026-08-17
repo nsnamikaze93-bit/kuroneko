@@ -186,6 +186,19 @@ async function imdbToRomajiTitles(imdbId, isMovie = false) {
   return [...new Set(candidates.filter(Boolean))];
 }
 
+async function getGlobalEpisodeOffset(imdbId, season) {
+  const url = `${CINEMETA}/meta/series/${imdbId}.json`;
+  const response = await get(url);
+  if (response.status !== 200) return 0;
+  const videos = (response.data && response.data.meta && response.data.meta.videos) || [];
+  let offset = 0;
+  for (const v of videos) {
+    const s = Number(v.season) || 0;
+    if (s > 0 && s < Number(season)) offset++;
+  }
+  return offset;
+}
+
 module.exports = {
   getTitleFromImdb,
   getKitsuAnime,
@@ -197,5 +210,6 @@ module.exports = {
   kitsuToImdb,
   imdbToKitsu,
   imdbToRomajiTitles,
+  getGlobalEpisodeOffset,
   normalize,
 };

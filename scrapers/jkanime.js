@@ -113,6 +113,8 @@ function pickBestAnime(query, results, season) {
   const q = normalize(query);
   const qWords = significantWords(query);
   const prefix2 = qWords.slice(0, 2).join(' ');
+  const want = season && season > 1 ? Number(season) : 1;
+  const hasVariants = results.some((r) => detectSeason(r) > 1);
   let best = null;
   let bestScore = 0;
   for (const r of results) {
@@ -128,10 +130,11 @@ function pickBestAnime(query, results, season) {
       score = shared * 15 + (firstOk ? 15 : 0);
       if (tWords.length >= 2 && qWords[0] === tWords[0] && qWords[1] === tWords[1]) score += 15;
     }
-    const want = season && season > 1 ? Number(season) : 1;
-    const got = detectSeason(r);
-    if (got === want) score += 40;
-    else if (got !== 1 || want !== 1) score -= 60;
+    if (hasVariants) {
+      const got = detectSeason(r);
+      if (got === want) score += 40;
+      else if (got !== 1 || want !== 1) score -= 60;
+    }
     if (score > bestScore) {
       bestScore = score;
       best = r;
@@ -139,7 +142,11 @@ function pickBestAnime(query, results, season) {
       best = r;
     }
   }
-  return bestScore >= 50 ? best : null;
+  if (bestScore >= 50 && best) {
+    const continuous = !hasVariants && want > 1;
+    return { ...best, continuous };
+  }
+  return null;
 }
 
 async function getAnimeInfo(slug) {

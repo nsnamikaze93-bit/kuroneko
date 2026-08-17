@@ -69,11 +69,17 @@ async function defineStreamHandler(args) {
     const titles = await resolveTitles(parsed);
     console.log(`[streams] Resolviendo "${titles[0]}" para ${id}`);
 
-    const anime = await findAnimeOnJkanime(titles, parsed.season ? Number(parsed.season) : 1);
-    console.log(`[streams] Anime en JKanime: "${anime.title}" (${anime.slug})`);
+    const season = parsed.season ? Number(parsed.season) : 1;
+    const anime = await findAnimeOnJkanime(titles, season);
+    console.log(`[streams] Anime en JKanime: "${anime.title}" (${anime.slug})${anime.continuous ? ' [serie continua]' : ''}`);
 
     const animeInfo = await jkanime.getAnimeInfo(anime.slug);
-    const episode = Number(parsed.episode) || 1;
+    let episode = Number(parsed.episode) || 1;
+    if (anime.continuous && parsed.type === 'imdb' && season > 1) {
+      const offset = await idMapper.getGlobalEpisodeOffset(parsed.imdbId, season);
+      episode += offset;
+      console.log(`[streams] ${id} -> episodio global ${episode} (offset ${offset})`);
+    }
 
     const resolved = await resolveEpisodeStreams(anime.slug, episode, animeInfo);
     streams.push(...resolved);
