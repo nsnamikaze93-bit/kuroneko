@@ -13,25 +13,28 @@ function parseId(id) {
   return { type: 'imdb', imdbId: parts[0], season: parts[1] || '1', episode: parts[2] || '1' };
 }
 
-async function resolveTitle(parsed) {
+async function resolveTitles(parsed) {
   if (parsed.type === 'kitsu') {
     const data = await idMapper.getKitsuAnime(parsed.kitsuId);
-    return idMapper.kitsuTitle(data);
+    return idMapper.kitsuSearchTitles(data);
   }
-  const { name } = await idMapper.getTitleFromImdb(parsed.imdbId);
-  return name;
+  return idMapper.imdbToRomajiTitles(parsed.imdbId);
 }
 
-async function findAnimeOnJkanime(title, season) {
-  const results = await jkanime.searchAnime(title);
-  if (!results.length) {
-    throw new Error(`JKanime no devolvio resultados para "${title}"`);
+async function findAnimeOnJkanime(titles, season) {
+  let lastError = null;
+  for (const title of titles) {
+    try {
+      const results = await jkanime.searchAnime(title);
+      if (results.length) {
+        const best = jkanime.pickBestAnime(title, results, season);
+        if (best) return best;
+      }
+    } catch (e) {
+      lastError = e;
+    }
   }
-  const best = jkanime.pickBestAnime(title, results, season);
-  if (!best) {
-    throw new Error(`No hubo coincidencia en JKanime para "${title}"`);
-  }
-  return best;
+  throw lastError || new Error(`No hubo coincidencia en JKanime para "${titles[0]}"`);
 }
 
 async function resolveEpisodeStreams(slug, episode, animeInfo) {
@@ -58,10 +61,10 @@ async function defineStreamHandler(args) {
 
   try {
     const parsed = parseId(id);
-    const title = await resolveTitle(parsed);
-    console.log(`[streams] Resolviendo "${title}" para ${id}`);
+    const titles = await resolveTitles(parsed);
+    console.log(`[streams] Resolviendo "${titles[0]}" para ${id}`);
 
-    const anime = await findAnimeOnJkanime(title, parsed.season ? Number(parsed.season) : 1);
+    const anime = await findAnimeOnJkanime(titles, parsed.season ? Number(parsed.season) : 1);
     console.log(`[streams] Anime en JKanime: "${anime.title}" (${anime.slug})`);
 
     const animeInfo = await jkanime.getAnimeInfo(anime.slug);

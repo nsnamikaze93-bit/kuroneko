@@ -3,6 +3,13 @@ const { get } = require('./http');
 const CINEMETA = 'https://v3-cinemeta.strem.io';
 const KITSU = 'https://kitsu.io/api/edge';
 
+const STOPWORDS_KITSU = new Set([
+  'the', 'of', 'and', 'a', 'an', 'to', 'in', 'on', 'for', 'with', 'from',
+  'is', 'it', 'not', 'or', 'but', 'as', 'at', 'by', 'de', 'la', 'el', 'los',
+  'las', 'no', 'del', 'wa', 'no', 'wo', 'o', 'mo', 'ga', 'season', 'part',
+  'movie', 'ova', 'film', 'that', 'this', 'was', 'are', 'you',
+]);
+
 function normalize(text) {
   return String(text || '')
     .toLowerCase()
@@ -18,6 +25,12 @@ function scoreMatch(query, title) {
   if (q === t) return 100;
   if (q.startsWith(t) || t.startsWith(q)) return 80;
   if (t.includes(q)) return 60;
+  const qWords = q.split(' ').filter((w) => w.length >= 3 && !STOPWORDS_KITSU.has(w));
+  const tWords = t.split(' ').filter((w) => w.length >= 3 && !STOPWORDS_KITSU.has(w));
+  if (qWords.length && tWords.length) {
+    const shared = qWords.filter((w) => tWords.includes(w)).length;
+    if (shared > 0) return Math.min(50 + shared * 10, 79);
+  }
   return 0;
 }
 
@@ -76,14 +89,49 @@ function kitsuTitle(data) {
   return title;
 }
 
+function kitsuRomajiTitle(data) {
+  const attrs = data.attributes || {};
+  const titles = attrs.titles || {};
+  return titles.en_jp || titles.ja_jp || attrs.canonicalTitle || kitsuTitle(data);
+}
+
+function kitsuSearchTitles(data) {
+  const candidates = [
+    kitsuRomajiTitle(data),
+    attrsFn(data, 'canonicalTitle'),
+    kitsuTitle(data),
+  ];
+  return [...new Set(candidates.filter(Boolean))];
+}
+
+function attrsFn(data, key) {
+  const attrs = data && data.attributes;
+  return attrs ? attrs[key] : null;
+}
+
 async function searchKitsu(query) {
-  const url = `${KITSU}/anime?filter[text]=${encodeURIComponent(query)}&page[limit]=10`;
-  const response = await get(url, { Accept: 'application/vnd.api+json' });
-  if (response.status !== 200) {
-    throw new Error(`Kitsu search fallo (HTTP ${response.status})`);
+  const q = normalize(query).trim();
+  const words = q.split(' ').filter((w) => w.length >= 3 && !STOPWORDS_KITSU.has(w));
+  const candidates = [q.slice(0, 30)];
+  const unique = [...new Set(words)];
+  const ranked = unique.slice().sort((a, b) => b.length - a.length).slice(0, 4);
+  if (unique[0] && !ranked.includes(unique[0])) ranked.push(unique[0]);
+  candidates.push(...ranked);
+  const all = new Map();
+  for (const c of [...new Set(candidates.filter(Boolean))]) {
+    const url = `${KITSU}/anime?filter[text]=${encodeURIComponent(c)}&page[limit]=8`;
+    try {
+      const response = await get(url, { Accept: 'application/vnd.api+json', timeout: 8000 });
+      if (response.status === 200 && response.data && response.data.data) {
+        for (const d of response.data.data) {
+          if (!all.has(d.id)) all.set(d.id, d);
+        }
+      }
+    } catch (e) {
+      // intenta la siguiente query
+    }
   }
-  const list = response.data && response.data.data ? response.data.data : [];
-  return pickBest(query, list, kitsuTitle);
+  return pickBest(query, [...all.values()], kitsuTitle);
 }
 
 async function searchCinemeta(query) {
@@ -124,13 +172,30 @@ async function imdbToKitsu(imdbId) {
   return kitsu ? kitsu.id : null;
 }
 
+async function imdbToRomajiTitles(imdbId) {
+  const { name } = await getTitleFromImdb(imdbId);
+  const candidates = [name];
+  try {
+    const kitsu = await searchKitsu(name);
+    if (kitsu) {
+      candidates.unshift(...kitsuSearchTitles(kitsu));
+    }
+  } catch (e) {
+    // si Kitsu falla, seguimos con el nombre de Cinemeta
+  }
+  return [...new Set(candidates.filter(Boolean))];
+}
+
 module.exports = {
   getTitleFromImdb,
   getKitsuAnime,
   kitsuTitle,
+  kitsuRomajiTitle,
+  kitsuSearchTitles,
   searchKitsu,
   searchCinemeta,
   kitsuToImdb,
   imdbToKitsu,
+  imdbToRomajiTitles,
   normalize,
 };
