@@ -47,8 +47,8 @@ function pickBest(query, candidates, titleFn) {
   return bestScore > 0 ? best : null;
 }
 
-async function getTitleFromImdb(imdbId) {
-  const url = `${CINEMETA}/meta/series/${imdbId}.json`;
+async function getTitleFromImdb(imdbId, isMovie = false) {
+  const url = `${CINEMETA}/meta/${isMovie ? 'movie' : 'series'}/${imdbId}.json`;
   const response = await get(url);
   if (response.status !== 200) {
     throw new Error(`Cinemeta no encontro ${imdbId} (HTTP ${response.status})`);
@@ -172,8 +172,8 @@ async function imdbToKitsu(imdbId) {
   return kitsu ? kitsu.id : null;
 }
 
-async function imdbToRomajiTitles(imdbId) {
-  const { name } = await getTitleFromImdb(imdbId);
+async function imdbToRomajiTitles(imdbId, isMovie = false) {
+  const { name } = await getTitleFromImdb(imdbId, isMovie);
   const candidates = [name];
   try {
     const kitsu = await searchKitsu(name);

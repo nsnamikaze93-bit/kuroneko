@@ -88,12 +88,24 @@ async function searchAnime(title) {
 }
 
 function detectSeason(r) {
-  const text = `${r.slug} ${r.title}`.toLowerCase();
+  const slug = String(r.slug || '').toLowerCase();
+  const title = String(r.title || '').toLowerCase();
+  const text = `${slug} ${title}`;
   const m = text.match(/(?:season|temporada|saison)\s*(\d+)/);
   if (m) return Number(m[1]);
-  if (/(?:-2nd-season|second-season|2nd-season|part-2|-2$|(^|\s)ii(\s|$))/.test(text)) return 2;
-  if (/(?:-3rd-season|third-season|3rd-season|part-3)/.test(text)) return 3;
-  if (/(?:-4th-season|fourth-season|4th-season|part-4)/.test(text)) return 4;
+  const tokenized = text.replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
+  if (tokenized.includes('part')) {
+    const p = tokenized.indexOf('part');
+    const n = tokenized[p + 1];
+    if (/^\d+$/.test(n || '')) return Number(n);
+  }
+  const romans = { i: 1, ii: 2, iii: 3, iv: 4, v: 5, vi: 6, vii: 7, viii: 8, ix: 9, x: 10, xi: 11, xii: 12 };
+  if (tokenized.includes('2nd') || tokenized.includes('second') || /-2-?$/.test(slug) || /-2nd-season/.test(slug)) return 2;
+  if (tokenized.includes('3rd') || tokenized.includes('third')) return 3;
+  if (tokenized.includes('4th') || tokenized.includes('fourth')) return 4;
+  for (const [rom, num] of Object.entries(romans)) {
+    if (tokenized.includes(rom)) return num;
+  }
   return 1;
 }
 
@@ -248,6 +260,7 @@ function extractServers(html) {
 module.exports = {
   searchAnime,
   pickBestAnime,
+  detectSeason,
   getAnimeInfo,
   findEpisode,
   getEpisodePage,

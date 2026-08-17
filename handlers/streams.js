@@ -4,13 +4,18 @@ const idMapper = require('../utils/idMapper');
 
 const BASE = 'https://jkanime.net';
 
-function parseId(id) {
+function parseId(id, type) {
   if (id.startsWith('kitsu:')) {
     const parts = id.split(':');
     return { type: 'kitsu', kitsuId: parts[1], episode: parts[2] || '1' };
   }
   const parts = id.split(':');
-  return { type: 'imdb', imdbId: parts[0], season: parts[1] || '1', episode: parts[2] || '1' };
+  return {
+    type: type === 'movie' ? 'movie' : 'imdb',
+    imdbId: parts[0],
+    season: parts[1] || '1',
+    episode: parts[2] || '1',
+  };
 }
 
 async function resolveTitles(parsed) {
@@ -18,7 +23,7 @@ async function resolveTitles(parsed) {
     const data = await idMapper.getKitsuAnime(parsed.kitsuId);
     return idMapper.kitsuSearchTitles(data);
   }
-  return idMapper.imdbToRomajiTitles(parsed.imdbId);
+  return idMapper.imdbToRomajiTitles(parsed.imdbId, parsed.type === 'movie');
 }
 
 async function findAnimeOnJkanime(titles, season) {
@@ -55,12 +60,12 @@ async function resolveEpisodeStreams(slug, episode, animeInfo) {
 }
 
 async function defineStreamHandler(args) {
-  const { id } = args;
+  const { id, type } = args;
   const streams = [];
   const start = Date.now();
 
   try {
-    const parsed = parseId(id);
+    const parsed = parseId(id, type);
     const titles = await resolveTitles(parsed);
     console.log(`[streams] Resolviendo "${titles[0]}" para ${id}`);
 
