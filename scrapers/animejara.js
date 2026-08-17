@@ -15,7 +15,7 @@ function cached(key, ttlMs, fn) {
 }
 
 const LANG_ORDER = ['CASTELLANO', 'JAPONES', 'LATINO'];
-const INTERESTING = ['CASTELLANO', 'JAPONES'];
+const INTERESTING = ['CASTELLANO'];
 
 const STOPWORDS = new Set([
   'the', 'of', 'and', 'a', 'an', 'to', 'in', 'on', 'for', 'with', 'from',
