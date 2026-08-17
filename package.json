@@ -1,7 +1,7 @@
 {
-  "name": "stremio-jkanime",
+  "name": "kuroneko",
   "version": "1.0.0",
-  "description": "Stremio addon que extrae streams de anime desde JKanime (Sub Espanol y Latino)",
+  "description": "Addon de Stremio con streams de anime desde JKanime y AnimeJara (Sub Español, Latino, Castellano y Japonés sub)",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
