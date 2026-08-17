@@ -25,6 +25,7 @@ function scoreMatch(query, title) {
   if (q === t) return 100;
   if (q.startsWith(t) || t.startsWith(q)) return 80;
   if (t.includes(q)) return 60;
+  if (q.replace(/ /g, '') === t.replace(/ /g, '')) return 95;
   const qWords = q.split(' ').filter((w) => w.length >= 3 && !STOPWORDS_KITSU.has(w));
   const tWords = t.split(' ').filter((w) => w.length >= 3 && !STOPWORDS_KITSU.has(w));
   if (qWords.length && tWords.length) {

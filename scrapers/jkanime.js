@@ -103,6 +103,7 @@ function detectSeason(r) {
   if (tokenized.includes('2nd') || tokenized.includes('second') || /-2-?$/.test(slug) || /-2nd-season/.test(slug)) return 2;
   if (tokenized.includes('3rd') || tokenized.includes('third')) return 3;
   if (tokenized.includes('4th') || tokenized.includes('fourth')) return 4;
+  if (tokenized.includes('revenge')) return 2;
   for (const [rom, num] of Object.entries(romans)) {
     if (tokenized.includes(rom)) return num;
   }
