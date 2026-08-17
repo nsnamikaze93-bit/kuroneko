@@ -1,4 +1,5 @@
 const jkanime = require('../scrapers/jkanime');
+const animejara = require('../scrapers/animejara');
 const resolvers = require('../resolvers');
 const idMapper = require('../utils/idMapper');
 
@@ -59,6 +60,59 @@ async function resolveEpisodeStreams(slug, episode, animeInfo) {
   return resolvers.resolveAll(servers, referer, servers.languages);
 }
 
+async function findAnimeOnAnimejara(titles, season) {
+  let lastError = null;
+  for (const title of titles) {
+    try {
+      const results = await animejara.searchAnime(title);
+      if (results.length) {
+        const best = await animejara.pickBestAnime(title, results, season);
+        if (best) return best;
+      }
+    } catch (e) {
+      lastError = e;
+    }
+  }
+  throw lastError || new Error(`No hubo coincidencia en AnimeJara para "${titles[0]}"`);
+}
+
+async function resolveAnimejaraEpisodeStreams(anime, season, episode) {
+  const info = await animejara.getAnimeInfo(anime.slug);
+  const match = animejara.findEpisodeInSeasons(info.seasons, season, episode);
+  if (!match) return [];
+
+  const html = await animejara.getEpisodePage(anime.slug, match.season, match.episode.numero_episodio);
+  const embeds = animejara.extractEmbeds(html);
+  const streams = [];
+  const seen = new Set();
+
+  for (const lang of animejara.INTERESTING) {
+    const embedUrl = embeds[lang];
+    if (!embedUrl) continue;
+    let servers;
+    try {
+      servers = await animejara.getEmbedServers(embedUrl);
+    } catch (e) {
+      console.warn(`[streams] AnimeJara embed ${lang} fallo: ${e.message}`);
+      continue;
+    }
+    for (const srv of servers) {
+      const direct = await animejara.resolveServer(srv.server, srv.url);
+      if (!direct) continue;
+      const key = direct.url.split('?')[0];
+      if (seen.has(key)) continue;
+      seen.add(key);
+      streams.push({
+        name: 'AnimeJara',
+        title: `${animejara.langLabel(lang)}`,
+        url: direct.url,
+        behaviorHints: { notWebReady: false },
+      });
+    }
+  }
+  return streams;
+}
+
 async function defineStreamHandler(args) {
   const { id, type } = args;
   const streams = [];
@@ -70,19 +124,33 @@ async function defineStreamHandler(args) {
     console.log(`[streams] Resolviendo "${titles[0]}" para ${id}`);
 
     const season = parsed.season ? Number(parsed.season) : 1;
-    const anime = await findAnimeOnJkanime(titles, season);
-    console.log(`[streams] Anime en JKanime: "${anime.title}" (${anime.slug})${anime.continuous ? ' [serie continua]' : ''}`);
-
-    const animeInfo = await jkanime.getAnimeInfo(anime.slug);
     let episode = Number(parsed.episode) || 1;
-    if (anime.continuous && parsed.type === 'imdb' && season > 1) {
-      const offset = await idMapper.getGlobalEpisodeOffset(parsed.imdbId, season);
-      episode += offset;
-      console.log(`[streams] ${id} -> episodio global ${episode} (offset ${offset})`);
+
+    try {
+      const anime = await findAnimeOnJkanime(titles, season);
+      console.log(`[streams] Anime en JKanime: "${anime.title}" (${anime.slug})${anime.continuous ? ' [serie continua]' : ''}`);
+
+      const animeInfo = await jkanime.getAnimeInfo(anime.slug);
+      if (anime.continuous && parsed.type === 'imdb' && season > 1) {
+        const offset = await idMapper.getGlobalEpisodeOffset(parsed.imdbId, season);
+        episode += offset;
+        console.log(`[streams] ${id} -> episodio global ${episode} (offset ${offset})`);
+      }
+
+      const resolved = await resolveEpisodeStreams(anime.slug, episode, animeInfo);
+      streams.push(...resolved);
+    } catch (e) {
+      console.log(`[streams] JKanime: ${e.message}`);
     }
 
-    const resolved = await resolveEpisodeStreams(anime.slug, episode, animeInfo);
-    streams.push(...resolved);
+    try {
+      const ajAnime = await findAnimeOnAnimejara(titles, season);
+      console.log(`[streams] Anime en AnimeJara: "${ajAnime.title}" (${ajAnime.slug})`);
+      const ajStreams = await resolveAnimejaraEpisodeStreams(ajAnime, season, episode);
+      streams.push(...ajStreams);
+    } catch (e) {
+      console.log(`[streams] AnimeJara: ${e.message}`);
+    }
   } catch (e) {
     console.error(`[streams] Error resolviendo ${id}: ${e.message}`);
   }
