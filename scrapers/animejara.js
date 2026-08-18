@@ -1,18 +1,11 @@
 const cheerio = require('cheerio');
 const { get, post } = require('../utils/http');
 const { normalize } = require('../utils/idMapper');
+const { createStore, createCached } = require('../utils/cache');
 
 const BASE = 'https://animejara.com';
 
-const cache = new Map();
-function cached(key, ttlMs, fn) {
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < ttlMs) return hit.value;
-  return fn().then((value) => {
-    cache.set(key, { at: Date.now(), value });
-    return value;
-  });
-}
+const cached = createCached(createStore(400));
 
 const LANG_ORDER = ['CASTELLANO', 'JAPONES', 'LATINO'];
 const INTERESTING = ['CASTELLANO'];
@@ -277,6 +270,7 @@ module.exports = {
   resolveServer,
   decodePacker,
   langLabel,
+  scoreMatch,
   INTERESTING,
   LANG_ORDER,
 };

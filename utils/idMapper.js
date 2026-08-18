@@ -1,7 +1,10 @@
 const { get } = require('./http');
+const { createStore, createCached } = require('./cache');
 
 const CINEMETA = 'https://v3-cinemeta.strem.io';
 const KITSU = 'https://kitsu.io/api/edge';
+
+const cached = createCached(createStore(300));
 
 const STOPWORDS_KITSU = new Set([
   'the', 'of', 'and', 'a', 'an', 'to', 'in', 'on', 'for', 'with', 'from',
@@ -15,7 +18,8 @@ function normalize(text) {
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, ' ');
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
 }
 
 function scoreMatch(query, title) {
@@ -57,29 +61,33 @@ function pickBest(query, candidates, titleFn) {
 
 async function getTitleFromImdb(imdbId, isMovie = false) {
   const url = `${CINEMETA}/meta/${isMovie ? 'movie' : 'series'}/${imdbId}.json`;
-  const response = await get(url);
-  if (response.status !== 200) {
-    throw new Error(`Cinemeta no encontro ${imdbId} (HTTP ${response.status})`);
-  }
-  const meta = response.data && response.data.meta;
-  if (!meta || !meta.name) {
-    throw new Error(`Cinemeta devolvio datos vacios para ${imdbId}`);
-  }
-  return { name: meta.name, type: meta.type || 'series', year: meta.year || null };
+  return cached(`cinemeta:${url}`, 12 * 60 * 60 * 1000, async () => {
+    const response = await get(url);
+    if (response.status !== 200) {
+      throw new Error(`Cinemeta no encontro ${imdbId} (HTTP ${response.status})`);
+    }
+    const meta = response.data && response.data.meta;
+    if (!meta || !meta.name) {
+      throw new Error(`Cinemeta devolvio datos vacios para ${imdbId}`);
+    }
+    return { name: meta.name, type: meta.type || 'series', year: meta.year || null };
+  });
 }
 
 async function getKitsuAnime(kitsuId) {
-  const response = await get(`${KITSU}/anime/${kitsuId}`, {
-    Accept: 'application/vnd.api+json',
+  return cached(`kitsu:anime:${kitsuId}`, 12 * 60 * 60 * 1000, async () => {
+    const response = await get(`${KITSU}/anime/${kitsuId}`, {
+      Accept: 'application/vnd.api+json',
+    });
+    if (response.status !== 200) {
+      throw new Error(`Kitsu no encontro el anime ${kitsuId} (HTTP ${response.status})`);
+    }
+    const data = response.data && response.data.data;
+    if (!data || !data.attributes) {
+      throw new Error(`Kitsu devolvio datos vacios para ${kitsuId}`);
+    }
+    return data;
   });
-  if (response.status !== 200) {
-    throw new Error(`Kitsu no encontro el anime ${kitsuId} (HTTP ${response.status})`);
-  }
-  const data = response.data && response.data.data;
-  if (!data || !data.attributes) {
-    throw new Error(`Kitsu devolvio datos vacios para ${kitsuId}`);
-  }
-  return data;
 }
 
 function kitsuTitle(data) {
@@ -131,65 +139,74 @@ function attrsFn(data, key) {
 
 async function searchKitsu(query) {
   const q = normalize(query).trim();
-  const words = q.split(' ').filter((w) => w.length >= 3 && !STOPWORDS_KITSU.has(w));
-  const candidates = [q.slice(0, 30)];
-  const unique = [...new Set(words)];
-  const ranked = unique.slice().sort((a, b) => b.length - a.length).slice(0, 4);
-  if (unique[0] && !ranked.includes(unique[0])) ranked.push(unique[0]);
-  candidates.push(...ranked);
-  const all = new Map();
-  for (const c of [...new Set(candidates.filter(Boolean))]) {
-    const url = `${KITSU}/anime?filter[text]=${encodeURIComponent(c)}&page[limit]=8`;
-    try {
-      const response = await get(url, { Accept: 'application/vnd.api+json', timeout: 8000 });
-      if (response.status === 200 && response.data && response.data.data) {
-        for (const d of response.data.data) {
-          if (!all.has(d.id)) all.set(d.id, d);
+  return cached(`kitsu:search:${q}`, 6 * 60 * 60 * 1000, async () => {
+    const words = q.split(' ').filter((w) => w.length >= 3 && !STOPWORDS_KITSU.has(w));
+    const candidates = [q.slice(0, 30)];
+    const unique = [...new Set(words)];
+    const ranked = unique.slice().sort((a, b) => b.length - a.length).slice(0, 4);
+    if (unique[0] && !ranked.includes(unique[0])) ranked.push(unique[0]);
+    candidates.push(...ranked);
+    const all = new Map();
+    await Promise.all(
+      [...new Set(candidates.filter(Boolean))].map(async (c) => {
+        const url = `${KITSU}/anime?filter[text]=${encodeURIComponent(c)}&page[limit]=8`;
+        try {
+          const response = await get(url, { Accept: 'application/vnd.api+json', timeout: 8000 });
+          if (response.status === 200 && response.data && response.data.data) {
+            for (const d of response.data.data) {
+              if (!all.has(d.id)) all.set(d.id, d);
+            }
+          }
+        } catch (e) {
+          // intenta la siguiente query
         }
-      }
-    } catch (e) {
-      // intenta la siguiente query
-    }
-  }
-  return pickBest(query, [...all.values()], kitsuTitleVariants);
+      })
+    );
+    return pickBest(query, [...all.values()], kitsuTitleVariants);
+  });
 }
 
 async function searchCinemeta(query) {
   const url = `${CINEMETA}/catalog/series/top/search=${encodeURIComponent(query)}.json`;
-  const response = await get(url);
-  if (response.status !== 200) return [];
-  const metas = response.data && response.data.metas ? response.data.metas : [];
-  const best = pickBest(query, metas, (m) => m.name);
-  return best ? best : null;
+  return cached(`cinemeta:search:${query}`, 12 * 60 * 60 * 1000, async () => {
+    const response = await get(url);
+    if (response.status !== 200) return null;
+    const metas = response.data && response.data.metas ? response.data.metas : [];
+    return pickBest(query, metas, (m) => m.name);
+  });
 }
 
 async function kitsuToImdb(kitsuId) {
-  const mappingResponse = await get(`${KITSU}/anime/${kitsuId}/mappings`, {
-    Accept: 'application/vnd.api+json',
-  });
-  if (mappingResponse.status === 200 && mappingResponse.data) {
-    const mappings = mappingResponse.data.data || [];
-    const imdb = mappings.find((m) => {
-      const site = m.attributes && m.attributes.externalSite;
-      return site && site.toLowerCase() === 'imdb';
+  return cached(`kitsu:toimdb:${kitsuId}`, 24 * 60 * 60 * 1000, async () => {
+    const mappingResponse = await get(`${KITSU}/anime/${kitsuId}/mappings`, {
+      Accept: 'application/vnd.api+json',
     });
-    if (imdb && imdb.attributes.externalId) {
-      return imdb.attributes.externalId;
+    if (mappingResponse.status === 200 && mappingResponse.data) {
+      const mappings = mappingResponse.data.data || [];
+      const imdb = mappings.find((m) => {
+        const site = m.attributes && m.attributes.externalSite;
+        return site && site.toLowerCase() === 'imdb';
+      });
+      if (imdb && imdb.attributes.externalId) {
+        return imdb.attributes.externalId;
+      }
     }
-  }
 
-  const data = await getKitsuAnime(kitsuId);
-  const title = kitsuTitle(data);
-  const cinemeta = await searchCinemeta(title);
-  if (cinemeta && cinemeta.id) return cinemeta.id;
+    const data = await getKitsuAnime(kitsuId);
+    const title = kitsuTitle(data);
+    const cinemeta = await searchCinemeta(title);
+    if (cinemeta && cinemeta.id) return cinemeta.id;
 
-  return null;
+    return null;
+  });
 }
 
 async function imdbToKitsu(imdbId) {
-  const { name } = await getTitleFromImdb(imdbId);
-  const kitsu = await searchKitsu(name);
-  return kitsu ? kitsu.id : null;
+  return cached(`cinemeta:tokitsu:${imdbId}`, 24 * 60 * 60 * 1000, async () => {
+    const { name } = await getTitleFromImdb(imdbId);
+    const kitsu = await searchKitsu(name);
+    return kitsu ? kitsu.id : null;
+  });
 }
 
 async function imdbToRomajiTitles(imdbId, isMovie = false) {
@@ -222,15 +239,17 @@ function kitsuTitlesOverlap(kitsu, name) {
 
 async function getGlobalEpisodeOffset(imdbId, season) {
   const url = `${CINEMETA}/meta/series/${imdbId}.json`;
-  const response = await get(url);
-  if (response.status !== 200) return 0;
-  const videos = (response.data && response.data.meta && response.data.meta.videos) || [];
-  let offset = 0;
-  for (const v of videos) {
-    const s = Number(v.season) || 0;
-    if (s > 0 && s < Number(season)) offset++;
-  }
-  return offset;
+  return cached(`cinemeta:offset:${imdbId}:${season}`, 12 * 60 * 60 * 1000, async () => {
+    const response = await get(url);
+    if (response.status !== 200) return 0;
+    const videos = (response.data && response.data.meta && response.data.meta.videos) || [];
+    let offset = 0;
+    for (const v of videos) {
+      const s = Number(v.season) || 0;
+      if (s > 0 && s < Number(season)) offset++;
+    }
+    return offset;
+  });
 }
 
 module.exports = {
@@ -240,6 +259,7 @@ module.exports = {
   kitsuRomajiTitle,
   kitsuTitleVariants,
   kitsuSearchTitles,
+  kitsuTitlesOverlap,
   searchKitsu,
   searchCinemeta,
   kitsuToImdb,
@@ -247,4 +267,6 @@ module.exports = {
   imdbToRomajiTitles,
   getGlobalEpisodeOffset,
   normalize,
+  scoreMatch,
+  pickBest,
 };
