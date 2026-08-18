@@ -45,12 +45,11 @@ async function findAnimeOnJkanime(titles, season) {
 
 async function resolveEpisodeStreams(slug, episode, animeInfo) {
   const episodeData = await jkanime.findEpisode(animeInfo.animeId, episode, animeInfo.token);
-  let html;
-  if (episodeData) {
-    html = await jkanime.getEpisodePage(slug, episodeData.number);
-  } else {
-    html = await jkanime.getEpisodePage(slug, episode);
+  if (!episodeData) {
+    console.warn(`[streams] Episodio ${episode} no existe aun en JKanime (${slug}), se omite`);
+    return [];
   }
+  const html = await jkanime.getEpisodePage(slug, episodeData.number);
   const servers = jkanime.extractServers(html);
   if (!servers.players.length && !servers.external.length) {
     console.warn(`[streams] No se encontraron reproductores en ${slug}/${episode}`);

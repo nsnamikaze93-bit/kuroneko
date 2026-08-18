@@ -30,7 +30,8 @@ function scoreMatch(query, title) {
   const tWords = t.split(' ').filter((w) => w.length >= 3 && !STOPWORDS_KITSU.has(w));
   if (qWords.length && tWords.length) {
     const shared = qWords.filter((w) => tWords.includes(w)).length;
-    if (shared > 0) return Math.min(50 + shared * 10, 79);
+    if (shared >= 2) return Math.min(50 + shared * 10, 79);
+    if (shared === 1 && qWords[0] === tWords[0]) return 45;
   }
   return 0;
 }
@@ -39,7 +40,13 @@ function pickBest(query, candidates, titleFn) {
   let best = null;
   let bestScore = 0;
   for (const c of candidates) {
-    const score = scoreMatch(query, titleFn(c));
+    const titles = titleFn(c);
+    const list = Array.isArray(titles) ? titles : [titles];
+    let score = 0;
+    for (const t of list) {
+      const s = scoreMatch(query, t);
+      if (s > score) score = s;
+    }
     if (score > bestScore) {
       bestScore = score;
       best = c;
@@ -96,6 +103,18 @@ function kitsuRomajiTitle(data) {
   return titles.en_jp || titles.ja_jp || attrs.canonicalTitle || kitsuTitle(data);
 }
 
+function kitsuTitleVariants(data) {
+  const attrs = data && data.attributes ? data.attributes : {};
+  const titles = attrs.titles || {};
+  return [
+    titles.en_jp,
+    titles.ja_jp,
+    attrs.canonicalTitle,
+    titles.es || titles.es_la,
+    titles.en || titles.en_us,
+  ].filter(Boolean);
+}
+
 function kitsuSearchTitles(data) {
   const candidates = [
     kitsuRomajiTitle(data),
@@ -132,7 +151,7 @@ async function searchKitsu(query) {
       // intenta la siguiente query
     }
   }
-  return pickBest(query, [...all.values()], kitsuTitle);
+  return pickBest(query, [...all.values()], kitsuTitleVariants);
 }
 
 async function searchCinemeta(query) {
@@ -178,13 +197,27 @@ async function imdbToRomajiTitles(imdbId, isMovie = false) {
   const candidates = [name];
   try {
     const kitsu = await searchKitsu(name);
-    if (kitsu) {
+    if (kitsu && kitsuTitlesOverlap(kitsu, name)) {
       candidates.unshift(...kitsuSearchTitles(kitsu));
     }
   } catch (e) {
     // si Kitsu falla, seguimos con el nombre de Cinemeta
   }
   return [...new Set(candidates.filter(Boolean))];
+}
+
+function kitsuTitlesOverlap(kitsu, name) {
+  const qWords = normalize(name)
+    .split(' ')
+    .filter((w) => w.length >= 3 && !STOPWORDS_KITSU.has(w));
+  if (!qWords.length) return true;
+  return kitsuTitleVariants(kitsu).some((t) => {
+    if (scoreMatch(name, t) >= 60) return true;
+    const tWords = normalize(t)
+      .split(' ')
+      .filter((w) => w.length >= 3 && !STOPWORDS_KITSU.has(w));
+    return qWords.filter((w) => tWords.includes(w)).length >= 2;
+  });
 }
 
 async function getGlobalEpisodeOffset(imdbId, season) {
@@ -205,6 +238,7 @@ module.exports = {
   getKitsuAnime,
   kitsuTitle,
   kitsuRomajiTitle,
+  kitsuTitleVariants,
   kitsuSearchTitles,
   searchKitsu,
   searchCinemeta,

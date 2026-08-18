@@ -110,28 +110,37 @@ function detectSeason(r) {
   return 1;
 }
 
-function pickBestAnime(query, results, season) {
+function titleScore(query, title) {
   const q = normalize(query);
+  const t = normalize(title);
+  if (!q || !t) return 0;
+  if (t === q) return 100;
+  if (t.startsWith(q) || q.startsWith(t)) return 90;
+  if (t.includes(q)) return 75;
   const qWords = significantWords(query);
-  const prefix2 = qWords.slice(0, 2).join(' ');
+  const tWords = significantWords(title);
+  let score = qWords.filter((w) => tWords.includes(w)).length * 15;
+  if (qWords[0] && tWords[0] === qWords[0]) score += 15;
+  if (tWords.length >= 2 && qWords[0] === tWords[0] && qWords[1] === tWords[1]) score += 15;
+  return score;
+}
+
+function pickBestAnime(query, results, season) {
   const want = season && season > 1 ? Number(season) : 1;
-  const hasVariants = results.some((r) => detectSeason(r) > 1);
+
+  const scored = results
+    .map((r) => ({ r, base: titleScore(query, r.title) }))
+    .filter((c) => c.base > 0);
+  if (!scored.length) return null;
+
+  const sameAnime = scored.filter((c) => c.base >= 60);
+  const hasVariants = sameAnime.some((c) => detectSeason(c.r) > 1);
+
   let best = null;
   let bestScore = 0;
-  for (const r of results) {
-    const t = normalize(r.title);
-    const tWords = significantWords(r.title);
-    let score = 0;
-    if (t === q) score = 100;
-    else if (t.startsWith(q) || q.startsWith(t)) score = 90;
-    else if (t.includes(q)) score = 75;
-    else {
-      const shared = qWords.filter((w) => tWords.includes(w)).length;
-      const firstOk = qWords[0] && tWords[0] === qWords[0];
-      score = shared * 15 + (firstOk ? 15 : 0);
-      if (tWords.length >= 2 && qWords[0] === tWords[0] && qWords[1] === tWords[1]) score += 15;
-    }
-    if (hasVariants) {
+  for (const { r, base } of scored) {
+    let score = base;
+    if (base >= 60 && hasVariants) {
       const got = detectSeason(r);
       if (got === want) score += 40;
       else if (got !== 1 || want !== 1) score -= 60;
