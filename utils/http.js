@@ -55,6 +55,22 @@ class CookieJar {
 
 const jar = new CookieJar();
 
+// Proxy opcional (Cloudflare Worker). Si PROXY_URL no está definida, todo va directo como antes.
+// Solo se enrutan estos hosts; el resto (Kitsu, Cinemeta, reproductores) sigue yendo directo.
+const PROXIED_HOSTS = new Set(['jkanime.net', 'animejara.com']);
+
+function viaProxy(url, headers, env = process.env) {
+  const proxy = env.PROXY_URL;
+  if (!proxy || !PROXIED_HOSTS.has(hostOf(url))) return { url, headers };
+  const out = { ...headers };
+  if (env.PROXY_KEY) out['x-proxy-key'] = env.PROXY_KEY;
+  return { url: `${proxy.replace(/\/+$/, '')}/?url=${encodeURIComponent(url)}`, headers: out };
+}
+
+if (process.env.PROXY_URL) {
+  console.log(`[http] Proxy activo para: ${[...PROXIED_HOSTS].join(', ')} (clave ${process.env.PROXY_KEY ? 'definida' : 'NO definida'})`);
+}
+
 function baseConfig(url, extraHeaders = {}) {
   const headers = {
     'User-Agent': USER_AGENT,
@@ -70,7 +86,9 @@ function baseConfig(url, extraHeaders = {}) {
 async function get(url, extraHeaders = {}, options = {}) {
   const config = baseConfig(url, extraHeaders);
   Object.assign(config, options);
-  const response = await axios.get(url, config);
+  const target = viaProxy(url, config.headers);
+  config.headers = target.headers;
+  const response = await axios.get(target.url, config);
   jar.setFromHeaders(response.headers, url);
   return response;
 }
@@ -78,9 +96,11 @@ async function get(url, extraHeaders = {}, options = {}) {
 async function post(url, body, extraHeaders = {}, options = {}) {
   const config = baseConfig(url, extraHeaders);
   Object.assign(config, options);
-  const response = await axios.post(url, body, config);
+  const target = viaProxy(url, config.headers);
+  config.headers = target.headers;
+  const response = await axios.post(target.url, body, config);
   jar.setFromHeaders(response.headers, url);
   return response;
 }
 
-module.exports = { get, post, jar, USER_AGENT };
+module.exports = { get, post, jar, USER_AGENT, viaProxy };

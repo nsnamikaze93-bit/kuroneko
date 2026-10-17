@@ -63,7 +63,7 @@ async function diagnoseAnimejara(title) {
 
 async function diagnose(title) {
   const [jk, aj] = await Promise.all([diagnoseJkanime(title), diagnoseAnimejara(title)]);
-  return { title, jkanime: jk, animejara: aj };
+  return { title, via_proxy: Boolean(process.env.PROXY_URL), jkanime: jk, animejara: aj };
 }
 
 module.exports = { diagnose };
