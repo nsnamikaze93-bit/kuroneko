@@ -1,5 +1,6 @@
 const cheerio = require('cheerio');
-const { get, post } = require('../utils/http');
+const http = require('../utils/http');
+const { describeResponse, assertUsableResponse } = require('../utils/diagnostics');
 const { normalize } = require('../utils/idMapper');
 const { createStore, createCached } = require('../utils/cache');
 
@@ -37,22 +38,56 @@ function buildSearchQueries(title) {
   return [...new Set(queries)];
 }
 
-async function searchOnce(query) {
-  const url = `${BASE}/buscar/${query}/`;
-  const response = await get(url);
-  if (response.status !== 200) return [];
-  const $ = cheerio.load(response.data);
+const RESERVED_SLUGS = new Set([
+  'buscar', 'directorio', 'horario', 'top', 'login', 'registro', 'ajax', 'ver',
+  'animes', 'generos', 'genero', 'tipo', 'estado', 'contacto', 'terminos',
+  'privacidad', 'dmca', 'faq', 'static', 'assets', 'index', 'calendario',
+]);
+
+function slugFromHref(href) {
+  const m = String(href || '').match(/^(?:https?:\/\/(?:www\.)?jkanime\.net)?\/([a-z0-9][a-z0-9-]*)\/?(?:[?#].*)?$/i);
+  return m ? m[1] : null;
+}
+
+// Extracción principal (.anime__item). Si la web cambia ese contenedor, se usa un
+// respaldo basado en enlaces; la validación por título (pickBestAnime) evita falsos positivos.
+function parseSearchResults($) {
   const results = [];
+  const seen = new Set();
   $('.anime__item').each((i, el) => {
     const link = $(el).find('a[href]').first();
-    const href = link.attr('href') || '';
-    const m = href.match(/jkanime\.net\/([^/]+)\/?$/);
-    if (!m) return;
-    const slug = m[1];
+    const slug = slugFromHref(link.attr('href'));
+    if (!slug || seen.has(slug)) return;
+    seen.add(slug);
     const itemTitle = $(el).find('h5 a').first().text().trim() || slug;
     const kind = $(el).find('.anime__item__text li.anime').first().text().trim() || 'Serie';
     results.push({ slug, title: itemTitle, kind });
   });
+  if (results.length) return results;
+
+  $('a[href]').each((i, el) => {
+    const slug = slugFromHref($(el).attr('href'));
+    if (!slug || RESERVED_SLUGS.has(slug) || seen.has(slug)) return;
+    const text = ($(el).attr('title') || $(el).text() || '').trim().replace(/\s+/g, ' ');
+    if (text.length < 2) return;
+    seen.add(slug);
+    results.push({ slug, title: text, kind: 'Serie', fallback: true });
+  });
+  if (results.length) {
+    console.warn(`[jkanime] selector .anime__item sin resultados; usando extracción de respaldo (${results.length} enlaces candidatos)`);
+  }
+  return results;
+}
+
+async function searchOnce(query) {
+  const url = `${BASE}/buscar/${query}/`;
+  const response = await http.get(url);
+  assertUsableResponse('JKanime', url, response);
+  const $ = cheerio.load(response.data);
+  const results = parseSearchResults($);
+  if (!results.length) {
+    console.log(`[jkanime] búsqueda "${query}": 0 resultados (${describeResponse(response)})`);
+  }
   return results;
 }
 
@@ -61,23 +96,37 @@ async function searchAnime(title) {
   if (!queries.length) {
     throw new Error(`Titulo vacio para buscar en JKanime: "${title}"`);
   }
-  return cached(`search:${title}`, 60 * 60 * 1000, async () => {
-    const fullResults = await searchOnce(queries[0]);
-    if (fullResults.length) return fullResults;
-    if (queries.length === 1) return [];
-    const merged = new Map();
-    await Promise.all(
-      queries.slice(1).map(async (q) => {
+  return cached(
+    `search:${title}`,
+    60 * 60 * 1000,
+    async () => {
+      const failures = [];
+      let succeeded = 0;
+      const run = async (q) => {
         try {
           const items = await searchOnce(q);
-          for (const it of items) if (!merged.has(it.slug)) merged.set(it.slug, it);
+          succeeded++;
+          return items;
         } catch (e) {
-          // ignora búsquedas individuales que fallen
+          failures.push(e.message);
+          return [];
         }
-      })
-    );
-    return [...merged.values()];
-  });
+      };
+      const fullResults = await run(queries[0]);
+      if (fullResults.length) return fullResults;
+      const merged = new Map();
+      await Promise.all(
+        queries.slice(1).map(async (q) => {
+          for (const it of await run(q)) if (!merged.has(it.slug)) merged.set(it.slug, it);
+        })
+      );
+      // Si ninguna búsqueda llegó a completarse, es un fallo (no "sin coincidencias").
+      if (!merged.size && succeeded === 0 && failures.length) throw new Error(failures[0]);
+      return [...merged.values()];
+    },
+    // Los resultados vacíos solo se recuerdan 5 min para no ocultar una recuperación del sitio.
+    { ttlFor: (v) => (v.length ? 60 * 60 * 1000 : 5 * 60 * 1000) }
+  );
 }
 
 function detectSeason(r) {
@@ -155,7 +204,7 @@ function pickBestAnime(query, results, season) {
 async function getAnimeInfo(slug) {
   return cached(`anime:${slug}`, 60 * 60 * 1000, async () => {
     const url = `${BASE}/${slug}/`;
-    const response = await get(url);
+    const response = await http.get(url);
     if (response.status !== 200) {
       throw new Error(`JKanime anime "${slug}" fallo (HTTP ${response.status})`);
     }
@@ -175,7 +224,7 @@ async function getAnimeInfo(slug) {
 
 async function findEpisode(animeId, episodeNumber, token) {
   const url = `${BASE}/ajax/search_episode/${animeId}/${episodeNumber}`;
-  const response = await post(
+  const response = await http.post(
     url,
     `_token=${encodeURIComponent(token || '')}`,
     { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' }
@@ -193,7 +242,7 @@ async function findEpisode(animeId, episodeNumber, token) {
 async function getEpisodePage(slug, episodeNumber) {
   return cached(`ep:${slug}:${episodeNumber}`, 30 * 60 * 1000, async () => {
     const url = `${BASE}/${slug}/${episodeNumber}/`;
-    const response = await get(url);
+    const response = await http.get(url);
     if (response.status !== 200) {
       throw new Error(`JKanime episodio "${slug}/${episodeNumber}" fallo (HTTP ${response.status})`);
     }
@@ -269,6 +318,7 @@ function extractServers(html) {
 
 module.exports = {
   searchAnime,
+  parseSearchResults,
   pickBestAnime,
   detectSeason,
   getAnimeInfo,

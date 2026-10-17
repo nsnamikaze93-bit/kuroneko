@@ -27,20 +27,33 @@ async function resolveTitles(parsed) {
   return idMapper.imdbToRomajiTitles(parsed.imdbId, parsed.type === 'movie');
 }
 
+// Busca por cada título y acumula el motivo de cada fallo para poder distinguir
+// "la petición falló" de "no hay resultados" y de "hay resultados pero no coinciden".
+function noMatchError(source, titles, reasons, failed) {
+  const head = failed ? `Búsqueda fallida en ${source}` : `No hubo coincidencia en ${source}`;
+  return new Error(`${head} para "${titles[0]}" -> ${reasons.join(' ; ')}`);
+}
+
 async function findAnimeOnJkanime(titles, season) {
-  let lastError = null;
+  const reasons = [];
+  let failed = false;
   for (const title of titles) {
     try {
       const results = await jkanime.searchAnime(title);
-      if (results.length) {
-        const best = jkanime.pickBestAnime(title, results, season);
-        if (best) return best;
+      if (!results.length) {
+        reasons.push(`"${title}": 0 resultados`);
+        continue;
       }
+      const best = jkanime.pickBestAnime(title, results, season);
+      if (best) return best;
+      const sample = results.slice(0, 3).map((r) => r.title).join(' | ');
+      reasons.push(`"${title}": ${results.length} resultado(s) sin coincidencia válida [${sample}]`);
     } catch (e) {
-      lastError = e;
+      failed = true;
+      reasons.push(`"${title}": ${e.message}`);
     }
   }
-  throw lastError || new Error(`No hubo coincidencia en JKanime para "${titles[0]}"`);
+  throw noMatchError('JKanime', titles, reasons, failed);
 }
 
 async function resolveEpisodeStreams(slug, episode, animeInfo) {
@@ -60,19 +73,25 @@ async function resolveEpisodeStreams(slug, episode, animeInfo) {
 }
 
 async function findAnimeOnAnimejara(titles, season) {
-  let lastError = null;
+  const reasons = [];
+  let failed = false;
   for (const title of titles) {
     try {
       const results = await animejara.searchAnime(title);
-      if (results.length) {
-        const best = await animejara.pickBestAnime(title, results, season);
-        if (best) return best;
+      if (!results.length) {
+        reasons.push(`"${title}": 0 resultados`);
+        continue;
       }
+      const best = await animejara.pickBestAnime(title, results, season);
+      if (best) return best;
+      const sample = results.slice(0, 3).map((r) => r.title).join(' | ');
+      reasons.push(`"${title}": ${results.length} resultado(s) sin coincidencia válida [${sample}]`);
     } catch (e) {
-      lastError = e;
+      failed = true;
+      reasons.push(`"${title}": ${e.message}`);
     }
   }
-  throw lastError || new Error(`No hubo coincidencia en AnimeJara para "${titles[0]}"`);
+  throw noMatchError('AnimeJara', titles, reasons, failed);
 }
 
 async function resolveAnimejaraEpisodeStreams(anime, season, episode) {
@@ -161,4 +180,4 @@ async function defineStreamHandler(args) {
   return { streams };
 }
 
-module.exports = { defineStreamHandler, parseId };
+module.exports = { defineStreamHandler, parseId, findAnimeOnJkanime, findAnimeOnAnimejara };

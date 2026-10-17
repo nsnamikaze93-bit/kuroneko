@@ -15,14 +15,19 @@ function createStore(maxEntries = 400) {
   };
 }
 
+// options.ttlFor(value) permite usar un TTL distinto al guardar (p. ej. más corto
+// para resultados vacíos, de modo que una búsqueda vacía no se quede "pegada").
 function createCached(store) {
-  return function cached(key, ttlMs, fn) {
+  return function cached(key, ttlMs, fn, options = {}) {
     const hit = store.get(key);
-    if (hit && Date.now() - hit.at < ttlMs) return Promise.resolve(hit.value);
+    if (hit && Date.now() - hit.at < (hit.ttl != null ? hit.ttl : ttlMs)) {
+      return Promise.resolve(hit.value);
+    }
     return Promise.resolve()
       .then(fn)
       .then((value) => {
-        store.set(key, { at: Date.now(), value });
+        const ttl = options.ttlFor ? options.ttlFor(value) : ttlMs;
+        store.set(key, { at: Date.now(), value, ttl });
         return value;
       });
   };

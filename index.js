@@ -2,6 +2,7 @@ const express = require('express');
 const { addonBuilder, getRouter } = require('stremio-addon-sdk');
 const { manifest } = require('./manifest');
 const { defineStreamHandler } = require('./handlers/streams');
+const { diagnose } = require('./utils/diagnose');
 
 const PORT = process.env.PORT || 7000;
 
@@ -30,6 +31,18 @@ app.use((req, res, next) => {
 
 app.get('/', (req, res) => {
   res.redirect('/manifest.json');
+});
+
+// Diagnóstico opcional: solo activo si existe la variable DEBUG_TOKEN en el entorno.
+// Uso: /debug/search?q=Noragami&token=<DEBUG_TOKEN>
+app.get('/debug/search', async (req, res) => {
+  const token = process.env.DEBUG_TOKEN;
+  if (!token || req.query.token !== token) return res.status(404).json({ error: 'Not found' });
+  try {
+    res.json(await diagnose(String(req.query.q || 'Noragami')));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.use(getRouter(addonInterface));

@@ -1,5 +1,6 @@
 const cheerio = require('cheerio');
-const { get, post } = require('../utils/http');
+const http = require('../utils/http');
+const { describeResponse, assertUsableResponse } = require('../utils/diagnostics');
 const { normalize } = require('../utils/idMapper');
 const { createStore, createCached } = require('../utils/cache');
 
@@ -39,26 +40,53 @@ function scoreMatch(query, title) {
   return score;
 }
 
+function parseLiveSearch(response, title) {
+  const body = response.data;
+  if (!body || typeof body !== 'object') {
+    throw new Error(`AnimeJara live_search no devolvió JSON (${describeResponse(response)})`);
+  }
+  if (!body.success) {
+    throw new Error(`AnimeJara live_search con success=false (${JSON.stringify(body).slice(0, 200)})`);
+  }
+  const animes = body.data && body.data.animes;
+  if (!Array.isArray(animes)) {
+    const keys = body.data && typeof body.data === 'object' ? Object.keys(body.data).join(',') : typeof body.data;
+    throw new Error(`AnimeJara live_search con estructura inesperada: data=[${keys}] (se esperaba data.animes)`);
+  }
+  // Solo se descartan los tipos explícitamente distintos de "serie"; si el campo falta no se descarta.
+  const series = animes.filter((a) => !a.tipo || String(a.tipo).toLowerCase() === 'serie');
+  if (animes.length && !series.length) {
+    const tipos = [...new Set(animes.map((a) => a.tipo))].join(',');
+    console.log(`[animejara] "${title}": ${animes.length} resultado(s), todos descartados por tipo (tipos=${tipos})`);
+  }
+  return series
+    .map((a) => ({
+      slug: a.slug,
+      title: a.titulo,
+      anio: a.anio,
+      rating: a.rating,
+      score: scoreMatch(title, a.titulo),
+    }))
+    .filter((r) => r.slug && r.title)
+    .sort((x, y) => y.score - x.score);
+}
+
 async function searchAnime(title) {
-  return cached(`aj:search:${title}`, 60 * 60 * 1000, async () => {
-    const response = await post(
-      `${BASE}/wp-admin/admin-ajax.php`,
-      new URLSearchParams({ action: 'live_search', s: title }).toString(),
-      { 'Content-Type': 'application/x-www-form-urlencoded', Referer: `${BASE}/` }
-    );
-    if (response.status !== 200 || !response.data || !response.data.success) return [];
-    const animes = (response.data.data && response.data.data.animes) || [];
-    return animes
-      .filter((a) => String(a.tipo || '').toLowerCase() === 'serie')
-      .map((a) => ({
-        slug: a.slug,
-        title: a.titulo,
-        anio: a.anio,
-        rating: a.rating,
-        score: scoreMatch(title, a.titulo),
-      }))
-      .sort((x, y) => y.score - x.score);
-  });
+  return cached(
+    `aj:search:${title}`,
+    60 * 60 * 1000,
+    async () => {
+      const url = `${BASE}/wp-admin/admin-ajax.php`;
+      const response = await http.post(
+        url,
+        new URLSearchParams({ action: 'live_search', s: title }).toString(),
+        { 'Content-Type': 'application/x-www-form-urlencoded', Referer: `${BASE}/` }
+      );
+      assertUsableResponse('AnimeJara', url, response);
+      return parseLiveSearch(response, title);
+    },
+    { ttlFor: (v) => (v.length ? 60 * 60 * 1000 : 5 * 60 * 1000) }
+  );
 }
 
 async function pickBestAnime(query, results, season) {
@@ -110,7 +138,7 @@ function extractSeasons(html) {
 async function getAnimeInfo(slug) {
   return cached(`aj:anime:${slug}`, 60 * 60 * 1000, async () => {
     const url = `${BASE}/anime/${slug}/`;
-    const response = await get(url, { Referer: `${BASE}/` });
+    const response = await http.get(url, { Referer: `${BASE}/` });
     if (response.status !== 200) {
       throw new Error(`AnimeJara anime "${slug}" fallo (HTTP ${response.status})`);
     }
@@ -168,14 +196,14 @@ function extractEmbeds(html) {
 async function getEpisodePage(slug, seasonNumber, episodeNumber) {
   return cached(`aj:ep:${slug}:${seasonNumber}:${episodeNumber}`, 30 * 60 * 1000, async () => {
     const url = `${BASE}/episode/${slug}-${seasonNumber}x${episodeNumber}/`;
-    const response = await get(url, { Referer: `${BASE}/anime/${slug}/` });
+    const response = await http.get(url, { Referer: `${BASE}/anime/${slug}/` });
     return response.data;
   });
 }
 
 async function getEmbedServers(embedUrl) {
   return cached(`aj:embed:${embedUrl}`, 30 * 60 * 1000, async () => {
-    const response = await get(embedUrl, { Referer: `${BASE}/` });
+    const response = await http.get(embedUrl, { Referer: `${BASE}/` });
     const html = response.data;
     const servers = [];
     const liRe = /<li[^>]*onclick=([\s\S]*?)<\/li>/g;
@@ -225,12 +253,12 @@ function decodePacker(html) {
 }
 
 async function resolveUqload(url) {
-  const response = await get(url, { Referer: 'https://uqload.com/' });
+  const response = await http.get(url, { Referer: 'https://uqload.com/' });
   return decodePacker(response.data);
 }
 
 async function resolveFilelions(url) {
-  const response = await get(url, { Referer: 'https://filelions.top/' });
+  const response = await http.get(url, { Referer: 'https://filelions.top/' });
   return decodePacker(response.data);
 }
 
@@ -261,6 +289,7 @@ function langLabel(lang) {
 
 module.exports = {
   searchAnime,
+  parseLiveSearch,
   pickBestAnime,
   getAnimeInfo,
   findEpisodeInSeasons,
